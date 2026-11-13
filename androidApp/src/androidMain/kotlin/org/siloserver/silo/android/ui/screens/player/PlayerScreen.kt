@@ -115,6 +115,7 @@ import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.executableMedia3ClientTransformations
 import org.siloserver.silo.model.playback.activeOriginalHttpClaims
 import org.siloserver.silo.model.watchtogether.MemberRole
+import org.siloserver.silo.model.watchtogether.ReactionPreset
 import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomPlaybackState
 import org.siloserver.silo.android.cast.SiloCastState
@@ -142,6 +143,7 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.siloserver.silo.watchtogether.RoomTransportIntent
 import org.siloserver.silo.android.cast.SiloCastButton
 import org.siloserver.silo.android.cast.SiloCastOverlay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -592,6 +594,17 @@ fun PlayerScreen(
                     context.getString(CommonR.string.player_watchParty_keptPlaying)
             }
             wasCatchingUp = catchingUp
+        }
+    }
+    val roomNotices by watchParty?.roomNotices.collectOrDefault(emptyList())
+    // A reaction that never reached the room socket says so, like a refused input.
+    val sendReaction: (ReactionPreset) -> Unit = { preset ->
+        watchParty?.let { party ->
+            roomScope.launch {
+                if (!party.sendReaction(preset)) {
+                    Toast.makeText(context, context.getString(CommonR.string.player_watchParty_undelivered), Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
     LaunchedEffect(roomEventNotice?.first) {
@@ -2077,7 +2090,24 @@ fun PlayerScreen(
                         },
                         spinnerVisible = spinnerVisible && activeTabletopPaneLayout == null,
                         castSlot = { discModifier ->
-                            // No Cast in a party (D7).
+                            // No Cast in a party (D7); its place holds the
+                            // reactions where the server takes them.
+                            val party = watchParty
+                            if (party != null && party.reactionsAvailable) {
+                                val room = roomSnapshot
+                                val canPauseWithBrb = room != null &&
+                                    room.playbackState == RoomPlaybackState.Playing &&
+                                    party.allows(RoomTransportIntent.PlayPause)
+                                WatchPartyReactionButton(
+                                    onReact = sendReaction,
+                                    onPauseWithBrb = if (canPauseWithBrb) {
+                                        { party.requestPlayPause(pause = true, reaction = ReactionPreset.Brb) }
+                                    } else {
+                                        null
+                                    },
+                                    onOpenChange = viewModel::onControlsPopupChanged,
+                                )
+                            }
                             if (!inRoom) {
                                 SiloCastButton(
                                     modifier = discModifier,
@@ -2176,25 +2206,32 @@ fun PlayerScreen(
         }
 
         // Party only: a one-time room event (the party kept playing, or went
-        // on without someone), shown briefly below the room status.
-        roomEventNotice?.let { (_, text) ->
-            if (!isInPictureInPictureMode) {
-                Surface(
-                    color = Color.Black.copy(alpha = 0.78f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(top = 64.dp, start = 16.dp, end = 16.dp)
-                        .widthIn(max = 420.dp),
-                ) {
-                    Text(
-                        text = text,
-                        color = Color.White,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    )
+        // on without someone), then members' play, pause and seek and
+        // everyone's reactions, shown briefly below the room status.
+        if (!isInPictureInPictureMode && (roomEventNotice != null || roomNotices.isNotEmpty())) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 64.dp, start = 16.dp, end = 16.dp),
+            ) {
+                roomEventNotice?.let { (_, text) ->
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.widthIn(max = 420.dp),
+                    ) {
+                        Text(
+                            text = text,
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        )
+                    }
                 }
+                WatchPartyRoomNoticeStack(roomNotices)
             }
         }
 

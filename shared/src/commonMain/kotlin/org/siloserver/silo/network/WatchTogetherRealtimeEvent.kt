@@ -1,5 +1,6 @@
 package org.siloserver.silo.network
 
+import org.siloserver.silo.model.watchtogether.Reaction
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.Suggestion
 import org.siloserver.silo.model.watchtogether.TransportCommand
@@ -9,6 +10,7 @@ object WatchTogetherRealtime {
     const val TypeSnapshot = "snapshot"
     const val TypeTransportCommand = "transport_command"
     const val TypeSuggestionsUpdate = "suggestions_update"
+    const val TypeReaction = "reaction"
     const val TypeRoomClosed = "room_closed"
     const val TypeConnectionReplaced = "connection_replaced"
     const val TypePong = "pong"
@@ -27,6 +29,9 @@ sealed class RoomRealtimeEvent {
     data class SnapshotEvent(val room: RoomSnapshot) : RoomRealtimeEvent()
     data class TransportCommandEvent(val command: TransportCommand) : RoomRealtimeEvent()
     data class SuggestionsEvent(val suggestions: List<Suggestion>) : RoomRealtimeEvent()
+
+    /** A member's preset reaction, delivered to everyone including the sender. */
+    data class ReactionEvent(val reaction: Reaction) : RoomRealtimeEvent()
 
     /**
      * A clock sample. [clientReceivedMs] is stamped on the wall clock when the

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.AddReaction
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -78,6 +79,8 @@ fun TvPlayerTransportCluster(
      * a viewer who is already done reach it early.
      */
     onUpNext: (() -> Unit)? = null,
+    /** Non-null in a Watch Party whose server takes reactions: opens the reaction strip. */
+    onReactions: (() -> Unit)? = null,
     onOpenHUD: () -> Unit,
     onClose: () -> Unit,
     playPauseFocus: FocusRequester,
@@ -133,14 +136,26 @@ fun TvPlayerTransportCluster(
 
         // Secondary group — pushed right.
         Row(verticalAlignment = Alignment.CenterVertically) {
+            onReactions?.let { openReactions ->
+                TransportIconButton(
+                    icon = Icons.Rounded.AddReaction,
+                    description = stringResource(CommonR.string.player_watchParty_reactions_label),
+                    label = stringResource(CommonR.string.player_watchParty_reactions_label),
+                    onClick = openReactions,
+                    focusRequester = firstSecondaryFocus,
+                    leftNeighbor = skipForwardFocus,
+                    onMoveUp = onMoveUpToScrubber,
+                )
+                DockGap()
+            }
             onUpNext?.let { showUpNext ->
                 TransportIconButton(
                     icon = Icons.Rounded.SkipNext,
                     description = stringResource(CommonR.string.player_audio_upNext),
                     label = stringResource(CommonR.string.player_transport_upNext),
                     onClick = showUpNext,
-                    focusRequester = firstSecondaryFocus,
-                    leftNeighbor = skipForwardFocus,
+                    focusRequester = firstSecondaryFocus.takeIf { onReactions == null },
+                    leftNeighbor = skipForwardFocus.takeIf { onReactions == null },
                     onMoveUp = onMoveUpToScrubber,
                 )
                 DockGap()
@@ -151,8 +166,8 @@ fun TvPlayerTransportCluster(
                 label = stringResource(CommonR.string.player_hud_subtitles),
                 value = subtitlesValue,
                 onClick = onOpenQuickSubtitles,
-                focusRequester = firstSecondaryFocus.takeIf { onUpNext == null },
-                leftNeighbor = skipForwardFocus.takeIf { onUpNext == null },
+                focusRequester = firstSecondaryFocus.takeIf { onUpNext == null && onReactions == null },
+                leftNeighbor = skipForwardFocus.takeIf { onUpNext == null && onReactions == null },
                 onMoveUp = onMoveUpToScrubber,
             )
             DockGap()

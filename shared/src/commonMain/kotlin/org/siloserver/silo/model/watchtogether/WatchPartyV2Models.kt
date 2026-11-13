@@ -22,6 +22,7 @@ data class WatchTogetherCapabilitiesV2(
     val picker: Boolean = false,
     @SerialName("vote_host_override") val voteHostOverride: Boolean = false,
     @SerialName("stop_playback") val stopPlayback: Boolean = false,
+    val reactions: Boolean = false,
     @SerialName("max_member_state_ids") val maxMemberStateIds: Int = 0,
     @SerialName("socket_protocol") val socketProtocol: String = "",
 )

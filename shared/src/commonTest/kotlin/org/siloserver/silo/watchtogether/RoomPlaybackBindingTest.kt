@@ -1,6 +1,7 @@
 package org.siloserver.silo.watchtogether
 
 import org.siloserver.silo.model.watchtogether.MemberRole
+import org.siloserver.silo.model.watchtogether.ReactionPreset
 import org.siloserver.silo.model.watchtogether.RoomMember
 import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomPlaybackState
@@ -86,6 +87,7 @@ class RoomPlaybackBindingTest {
             action: String,
             positionSeconds: Double?,
             isPaused: Boolean,
+            reaction: ReactionPreset?,
         ) = true.also { requests += action to positionSeconds }
 
         fun kinds() = sent.map { it.kind }

@@ -1,5 +1,6 @@
 package org.siloserver.silo.watchtogether
 
+import org.siloserver.silo.model.watchtogether.ReactionPreset
 import org.siloserver.silo.model.watchtogether.MemberRole
 import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomPlaybackState
@@ -49,6 +50,8 @@ interface RoomPlaybackRoom {
         action: String,
         positionSeconds: Double?,
         isPaused: Boolean,
+        /** A preset sent with a pause only ("Pause: brb"). */
+        reaction: ReactionPreset? = null,
     ): Boolean
 }
 
@@ -388,10 +391,19 @@ class RoomPlaybackBinding(
 
     // ---- user intents ---------------------------------------------------------
 
-    /** Ask the room to play or pause. The player changes only when the room's command arrives. */
-    fun requestPlayPause(pause: Boolean): RoomTransportResult {
+    /**
+     * Ask the room to play or pause. The player changes only when the room's
+     * command arrives. [reaction] goes out with a pause only ("Pause: brb").
+     */
+    fun requestPlayPause(pause: Boolean, reaction: ReactionPreset? = null): RoomTransportResult {
         if (!pause && player.observations.value.state == RoomPlayerState.Ended) return RoomTransportResult.Ignored
-        return request(RoomTransportIntent.PlayPause, if (pause) TransportAction.Pause else TransportAction.Play, null, pause)
+        return request(
+            RoomTransportIntent.PlayPause,
+            if (pause) TransportAction.Pause else TransportAction.Play,
+            null,
+            pause,
+            reaction.takeIf { pause },
+        )
     }
 
     /** Ask the room to seek (host only). */
@@ -434,6 +446,7 @@ class RoomPlaybackBinding(
         action: TransportAction,
         positionSeconds: Double?,
         isPaused: Boolean,
+        reaction: ReactionPreset? = null,
     ): RoomTransportResult {
         val snapshot = room.roomSnapshot.value ?: return RoomTransportResult.NotInRoom
         if (snapshot.phase != RoomPhase.Playing) return RoomTransportResult.NotInRoom
@@ -448,7 +461,7 @@ class RoomPlaybackBinding(
         }
         val position = positionSeconds ?: player.observations.value.sourcePositionSeconds
         scope.launch {
-            val delivered = room.transportRequestForAuthorization(authorization, intent, action.wire, position, isPaused)
+            val delivered = room.transportRequestForAuthorization(authorization, intent, action.wire, position, isPaused, reaction)
             if (!delivered) _notices.tryEmit(RoomPlaybackNotice.Undelivered)
         }
         return RoomTransportResult.Sent

@@ -8,6 +8,7 @@ import org.siloserver.silo.model.watchtogether.MemberStateRequest
 import org.siloserver.silo.model.watchtogether.MemberStateResponse
 import org.siloserver.silo.model.watchtogether.PickerResponse
 import org.siloserver.silo.model.watchtogether.PromoteSuggestionRequest
+import org.siloserver.silo.model.watchtogether.ReactionPreset
 import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomResponse
 import org.siloserver.silo.model.watchtogether.RoomSelectionMode
@@ -18,6 +19,7 @@ import org.siloserver.silo.model.watchtogether.SourceFallbackReason
 import org.siloserver.silo.model.watchtogether.SourceFallbackRequest
 import org.siloserver.silo.model.watchtogether.Suggestion
 import org.siloserver.silo.model.watchtogether.SuggestionReceipt
+import org.siloserver.silo.model.watchtogether.TransportAction
 import org.siloserver.silo.model.watchtogether.TransportCommand
 import org.siloserver.silo.model.watchtogether.UpdatePolicyRequest
 import org.siloserver.silo.model.watchtogether.GuestControlPolicy
@@ -39,6 +41,7 @@ import org.siloserver.silo.watchtogether.RoomPlaybackRoom
 import org.siloserver.silo.watchtogether.RoomProof
 import org.siloserver.silo.watchtogether.RoomSessionRepository
 import org.siloserver.silo.watchtogether.RoomTransportIntent
+import org.siloserver.silo.watchtogether.WatchPartyRoomEvent
 import org.siloserver.silo.watchtogether.rankSuggestions
 import org.siloserver.silo.watchtogether.roomProofExpiryMs
 import org.siloserver.silo.watchtogether.roomTransportAuthorized
@@ -274,6 +277,18 @@ class WatchTogetherRepository(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val errors: SharedFlow<String> = _errors.asSharedFlow()
+
+    /**
+     * Member-issued transport commands, reactions and reaction refusals, one
+     * per message, for passing notices. A state flow would merge two quick
+     * messages into one. Buffered + drop-oldest; a missed notice is harmless.
+     */
+    private val _roomEvents = MutableSharedFlow<WatchPartyRoomEvent>(
+        replay = 0,
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val roomEvents: SharedFlow<WatchPartyRoomEvent> = _roomEvents.asSharedFlow()
 
     /** Surface a local delivery failure through the same non-terminal UI path. */
     fun reportDeliveryFailure(message: String) {
@@ -774,6 +789,7 @@ class WatchTogetherRepository(
         action: String,
         positionSeconds: Double?,
         isPaused: Boolean,
+        reaction: ReactionPreset?,
     ): Boolean {
         val target = stateMutex.withLock {
             val current = binding ?: return@withLock null
@@ -802,6 +818,7 @@ class WatchTogetherRepository(
             action = action,
             positionSeconds = positionSeconds,
             isPaused = isPaused,
+            reaction = reaction?.wire?.takeIf { action == TransportAction.Pause.wire },
         )
     }
 
@@ -829,6 +846,10 @@ class WatchTogetherRepository(
     /** Advisory lobby Ready over the room socket. */
     suspend fun setLobbyReady(ready: Boolean): Boolean =
         currentWritableRealtime()?.lobbyReady(ready) ?: false
+
+    /** A preset reaction to everyone in the room, over the room socket. */
+    suspend fun sendReaction(preset: ReactionPreset): Boolean =
+        currentWritableRealtime()?.reaction(preset.wire) ?: false
 
     // ---- WS lifecycle ------------------------------------------------------------
 
@@ -1200,7 +1221,12 @@ class WatchTogetherRepository(
                         connection = _connectionState.value,
                         receivedAtMs = monotonicNowMs(),
                     )
+                    if (event.command.issuedBy != null) {
+                        _roomEvents.tryEmit(WatchPartyRoomEvent.Transport(event.command, serverWallNowMs()))
+                    }
                 }
+                is RoomRealtimeEvent.ReactionEvent ->
+                    _roomEvents.tryEmit(WatchPartyRoomEvent.ReactionReceived(event.reaction))
                 is RoomRealtimeEvent.Pong -> {
                     val sent = parseRfc3339ToEpochMillis(event.clientSentAt)
                     val serverReceived = parseRfc3339ToEpochMillis(event.serverReceivedAt)
@@ -1222,7 +1248,12 @@ class WatchTogetherRepository(
                 }
                 is RoomRealtimeEvent.Error ->
                     // Transient, NON-terminal: a rejected request must not end the party.
-                    _errors.tryEmit(event.message.ifBlank { event.code })
+                    // A refused reaction is explained by its own notice.
+                    if (event.code == RATE_LIMITED) {
+                        _roomEvents.tryEmit(WatchPartyRoomEvent.ReactionRateLimited)
+                    } else {
+                        _errors.tryEmit(event.message.ifBlank { event.code })
+                    }
                 RoomRealtimeEvent.Opened,
                 is RoomRealtimeEvent.Closed,
                 is RoomRealtimeEvent.ConnectionReplaced,
@@ -1276,6 +1307,7 @@ class WatchTogetherRepository(
 
     companion object {
         private const val INVALID_RESPONSE = "invalid_response"
+        private const val RATE_LIMITED = "rate_limited"
 
         /** Refusals that may mean the room ended or this membership lapsed; the room read decides. */
         private val RECONCILE_STATUSES = setOf(403, 404, 409)

@@ -1,12 +1,15 @@
 package org.siloserver.silo.common.player.watchparty
 
 import android.os.SystemClock
+import org.siloserver.silo.model.watchtogether.ReactionPreset
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.SourceFallbackReason
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.WatchPartyEnded
 import org.siloserver.silo.repository.WatchTogetherRepository
 import org.siloserver.silo.watchtogether.RoomPlaybackBinding
+import org.siloserver.silo.watchtogether.RoomNotice
+import org.siloserver.silo.watchtogether.RoomNoticeBoard
 import org.siloserver.silo.watchtogether.RoomPlaybackNotice
 import org.siloserver.silo.watchtogether.RoomPlayerPort
 import org.siloserver.silo.watchtogether.RoomSession
@@ -17,6 +20,8 @@ import org.siloserver.silo.watchtogether.WatchPartyPlaybackContext
 import org.siloserver.silo.watchtogether.playbackContext
 import org.siloserver.silo.watchtogether.roomTransportAuthorized
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +43,7 @@ class WatchPartyPlayback(
     private val roomSession: RoomSession,
     private val availability: WatchPartyAvailabilityRepository,
     player: RoomPlayerPort,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
 ) {
     val binding = RoomPlaybackBinding(
         room = repository,
@@ -54,6 +59,15 @@ class WatchPartyPlayback(
     val ended: StateFlow<WatchPartyEnded?> get() = repository.ended
 
     val notices: SharedFlow<RoomPlaybackNotice> get() = binding.notices
+
+    private val noticeBoard = RoomNoticeBoard(scope, self = { repository.roomSnapshot.value?.selfMember })
+    private var roomEventsJob: Job? = null
+
+    /** Passing notices about members' play, pause and seek, and everyone's reactions. */
+    val roomNotices: StateFlow<List<RoomNotice>> get() = noticeBoard.notices
+
+    /** The server takes preset reactions; older servers don't, and the controls stay hidden. */
+    val reactionsAvailable: Boolean get() = availability.features?.reactions == true
     val catchingUp: StateFlow<Boolean> get() = binding.catchingUp
     val offerLowerQuality: StateFlow<Boolean> get() = binding.offerLowerQuality
 
@@ -77,6 +91,8 @@ class WatchPartyPlayback(
 
     fun start() {
         binding.start()
+        roomEventsJob?.cancel()
+        roomEventsJob = scope.launch { repository.roomEvents.collect(noticeBoard::onEvent) }
         WatchPartyDebugRegistry.register(binding)
         roomSession.adopt(roomId)
     }
@@ -84,10 +100,17 @@ class WatchPartyPlayback(
     /** Stop this screen's binding; the room engagement continues. */
     fun dispose() {
         WatchPartyDebugRegistry.unregister(binding)
+        roomEventsJob?.cancel()
+        roomEventsJob = null
         binding.dispose()
     }
 
-    fun requestPlayPause(pause: Boolean): RoomTransportResult = binding.requestPlayPause(pause)
+    /** [reaction] goes out with a pause only ("Pause: brb"). */
+    fun requestPlayPause(pause: Boolean, reaction: ReactionPreset? = null): RoomTransportResult =
+        binding.requestPlayPause(pause, reaction)
+
+    /** Send a preset reaction to everyone. False when it could not reach the room socket. */
+    suspend fun sendReaction(preset: ReactionPreset): Boolean = repository.sendReaction(preset)
 
     fun requestSeek(sourceSeconds: Double): RoomTransportResult = binding.requestSeek(sourceSeconds)
 

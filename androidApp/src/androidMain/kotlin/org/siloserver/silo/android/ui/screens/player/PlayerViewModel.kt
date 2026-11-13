@@ -1330,6 +1330,7 @@ class PlayerViewModel(
     private var controlsHideJob: Job? = null
     // True while the seek bar is dragged; see onScrubbingChanged.
     private var scrubbing = false
+    private var controlsPopupOpen = false
     private var introObserverJob: Job? = null
     private var lifecycleObserverJob: Job? = null
     private var resolveNextEpisodeJob: Job? = null
@@ -6786,6 +6787,16 @@ class PlayerViewModel(
         scheduleControlsHide()
     }
 
+    /**
+     * Holds the controls on screen while a popup anchored in them is open (the
+     * Watch Party reactions): hiding the controls would take the popup with
+     * them. The timer restarts when it closes.
+     */
+    fun onControlsPopupChanged(open: Boolean) {
+        controlsPopupOpen = open
+        scheduleControlsHide()
+    }
+
     /** Called when the user exits the player. */
     fun onExit() {
         if (!exitPrepared.compareAndSet(false, true)) return
@@ -6859,7 +6870,7 @@ class PlayerViewModel(
 
     private fun scheduleControlsHide() {
         controlsHideJob?.cancel()
-        if (scrubbing) return
+        if (scrubbing || controlsPopupOpen) return
         controlsHideJob = viewModelScope.launch {
             delay(CONTROLS_AUTO_HIDE_MS)
             val state = _uiState.value

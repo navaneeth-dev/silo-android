@@ -226,6 +226,55 @@ data class TransportCommand(
     @SerialName("execute_at") val executeAt: String,
     @SerialName("issued_at") val issuedAt: String = "",
     @SerialName("playback_state") val playbackState: RoomPlaybackState = RoomPlaybackState.Unknown,
+    /**
+     * The member whose play, pause or seek this command carries out. Absent
+     * when the room acts on its own (corrections, syncs, buffering barriers)
+     * and on servers without the `transport_issuer` capability.
+     */
+    @SerialName("issued_by") val issuedBy: MemberIdentity? = null,
+)
+
+/**
+ * A room member named in a message other members see. The socket sends
+ * `user_id` as a number; the lenient decoder reads it into a string, as for
+ * [RoomMember.userId].
+ */
+@Serializable
+data class MemberIdentity(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("profile_id") val profileId: String = "",
+    @SerialName("display_name") val displayName: String = "",
+) {
+    /** Whether this names the same account and profile as [member]. */
+    fun isSameMember(member: RoomMember?): Boolean =
+        member != null && userId == member.userId && profileId == member.profileId
+}
+
+/** Reaction presets, in the order the controls show them. Sent and received as data. */
+enum class ReactionPreset(val wire: String) {
+    Brb("brb"),
+    Back("back"),
+    SnackBreak("snack_break"),
+    Laugh("laugh");
+
+    companion object {
+        /** The preset for [w], or null for one this client does not know. */
+        fun fromWire(w: String?): ReactionPreset? = entries.firstOrNull { it.wire == w }
+    }
+}
+
+/**
+ * One delivered reaction (server `reaction` frame). [preset] stays a string
+ * so a preset added later decodes; [ReactionPreset.fromWire] names the known
+ * ones. [commandId] names the pause it was sent with ("Pause: brb").
+ */
+@Serializable
+data class Reaction(
+    @SerialName("reaction_id") val reactionId: String,
+    val preset: String,
+    val from: MemberIdentity,
+    @SerialName("command_id") val commandId: String? = null,
+    @SerialName("sent_at") val sentAt: String = "",
 )
 
 // ---- REST request models --------------------------------------------------
@@ -357,6 +406,15 @@ data class WsTransportRequest(
     val action: String,
     @SerialName("position_seconds") val positionSeconds: Double? = null,
     @SerialName("is_paused") val isPaused: Boolean,
+    /** A reaction preset sent with a pause only ("Pause: brb"). */
+    val reaction: String? = null,
+)
+
+/** A preset reaction to everyone in the room. */
+@Serializable
+data class WsReaction(
+    val type: String = "reaction",
+    val preset: String,
 )
 
 /**

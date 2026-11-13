@@ -79,6 +79,8 @@ class WatchPartyWireTest {
 
     @Test
     fun `unknown frames are ignored and malformed known frames are reported`() {
+        assertNull(decodeRoomFrame(SiloJson, """{"type":"sticker","emoji":"x"}"""))
+        // A reaction carries no room state: one that does not decode is dropped, not reconciled.
         assertNull(decodeRoomFrame(SiloJson, """{"type":"reaction","emoji":"x"}"""))
         assertNull(decodeRoomFrame(SiloJson, "not json"))
         assertIs<RoomRealtimeEvent.Malformed>(decodeRoomFrame(SiloJson, """{"type":"snapshot","room":"nope"}"""))

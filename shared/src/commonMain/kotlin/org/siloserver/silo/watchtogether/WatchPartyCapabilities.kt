@@ -27,6 +27,8 @@ data class WatchPartyFeatures(
     val maxMemberStateIds: Int,
     val voteHostOverride: Boolean,
     val sourceFallback: Boolean,
+    /** Members send preset reactions over the room socket, alone or with a pause. */
+    val reactions: Boolean = false,
 )
 
 sealed interface WatchPartyAvailability {
@@ -74,6 +76,7 @@ fun watchPartyAvailability(
             maxMemberStateIds = if (room.memberState) room.maxMemberStateIds.coerceAtLeast(0) else 0,
             voteHostOverride = room.voteHostOverride,
             sourceFallback = WatchPartyPlaybackFeatures.SourceFallback in playback.features,
+            reactions = room.reactions,
         ),
     )
 }

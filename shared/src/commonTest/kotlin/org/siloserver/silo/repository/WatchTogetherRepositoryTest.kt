@@ -32,6 +32,7 @@ import org.siloserver.silo.network.RoomTicketExpiringException
 import org.siloserver.silo.network.RoomTicketRefusedException
 import org.siloserver.silo.network.WatchTogetherRealtimeClient
 import org.siloserver.silo.network.api.WatchTogetherApi
+import org.siloserver.silo.watchtogether.WatchPartyRoomEvent
 import org.siloserver.silo.watchtogether.RoomSession
 import org.siloserver.silo.watchtogether.RoomTransportIntent
 import kotlinx.coroutines.CompletableDeferred
@@ -264,6 +265,7 @@ class WatchTogetherRepositoryTest {
             action: String,
             positionSeconds: Double?,
             isPaused: Boolean,
+            reaction: String?,
         ): Boolean {
             transportResultGate?.let { return it.await() }
             transportActions += action
@@ -988,14 +990,20 @@ class WatchTogetherRepositoryTest {
         val job = launch { r.connect("room-1") }
         runCurrent()
         val seen = mutableListOf<String>()
+        val roomEvents = mutableListOf<WatchPartyRoomEvent>()
         val errorJob = launch { r.errors.collect { seen.add(it) } }
+        val eventsJob = launch { r.roomEvents.collect { roomEvents.add(it) } }
         runCurrent()
 
         realtime.events.emit(RoomRealtimeEvent.Error(code = "bad_request", message = "transport rejected"))
+        // A refused reaction is a room notice, not an error toast.
+        realtime.events.emit(RoomRealtimeEvent.Error(code = "rate_limited", message = "watch together reactions are rate limited"))
         runCurrent()
 
         assertNull(r.roomClosedReason.value)
         assertEquals(listOf("transport rejected"), seen)
+        assertEquals(listOf<WatchPartyRoomEvent>(WatchPartyRoomEvent.ReactionRateLimited), roomEvents)
+        eventsJob.cancel()
         errorJob.cancel()
         job.cancel()
     }

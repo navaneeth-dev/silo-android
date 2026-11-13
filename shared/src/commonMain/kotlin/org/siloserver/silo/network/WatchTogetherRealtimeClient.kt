@@ -1,6 +1,7 @@
 package org.siloserver.silo.network
 
 import org.siloserver.silo.network.localroute.stayOnSavedAddress
+import org.siloserver.silo.model.watchtogether.Reaction
 import org.siloserver.silo.model.watchtogether.RoomPlaybackState
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.Suggestion
@@ -10,6 +11,7 @@ import org.siloserver.silo.model.watchtogether.WsAttachSession
 import org.siloserver.silo.model.watchtogether.WsBuffering
 import org.siloserver.silo.model.watchtogether.WsLobbyReady
 import org.siloserver.silo.model.watchtogether.WsPing
+import org.siloserver.silo.model.watchtogether.WsReaction
 import org.siloserver.silo.model.watchtogether.WsReady
 import org.siloserver.silo.model.watchtogether.WsStateReport
 import org.siloserver.silo.model.watchtogether.WsTransportRequest
@@ -88,6 +90,7 @@ interface WatchTogetherRealtimeClient {
     suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean, commandId: String? = null): Boolean
     suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean
     suspend fun lobbyReady(ready: Boolean): Boolean = false
+    suspend fun reaction(preset: String): Boolean = false
     suspend fun ping(clientSentAt: String): Boolean
 
     /** Opaque identity of the currently writable physical socket, if any. */
@@ -96,12 +99,14 @@ interface WatchTogetherRealtimeClient {
     /**
      * Send only on the physical socket identified by [connectionId].
      * A replacement socket must never receive an old room's delayed command.
+     * [reaction] rides along with a pause only.
      */
     suspend fun transportRequestOnConnection(
         connectionId: Long,
         action: String,
         positionSeconds: Double?,
         isPaused: Boolean,
+        reaction: String? = null,
     ): Boolean = false
 }
 
@@ -334,13 +339,14 @@ class DefaultWatchTogetherRealtimeClient private constructor(
         action: String,
         positionSeconds: Double?,
         isPaused: Boolean,
+        reaction: String?,
     ): Boolean {
         val writable = sessionMutex.withLock {
             session.takeIf { activeSessionId == connectionId }
         } ?: return false
         val payload = json.encodeToString(
             WsTransportRequest.serializer(),
-            WsTransportRequest(action = action, positionSeconds = positionSeconds, isPaused = isPaused),
+            WsTransportRequest(action = action, positionSeconds = positionSeconds, isPaused = isPaused, reaction = reaction),
         )
         return deliver(writable, payload)
     }
@@ -389,6 +395,9 @@ class DefaultWatchTogetherRealtimeClient private constructor(
     override suspend fun lobbyReady(ready: Boolean) =
         sendText(json.encodeToString(WsLobbyReady.serializer(), WsLobbyReady(ready = ready)))
 
+    override suspend fun reaction(preset: String) =
+        sendText(json.encodeToString(WsReaction.serializer(), WsReaction(preset = preset)))
+
     override suspend fun ping(clientSentAt: String) =
         sendText(json.encodeToString(WsPing.serializer(), WsPing(clientSentAt = clientSentAt)))
 }
@@ -401,6 +410,7 @@ class DefaultWatchTogetherRealtimeClient private constructor(
  *  - `snapshot {room}`            → [RoomRealtimeEvent.SnapshotEvent]
  *  - `transport_command {command}`→ [RoomRealtimeEvent.TransportCommandEvent]
  *  - `suggestions_update {suggestions}` → [RoomRealtimeEvent.SuggestionsEvent]
+ *  - `reaction {reaction}`        → [RoomRealtimeEvent.ReactionEvent]; null when it does not decode
  *  - `room_closed {reason}`       → [RoomRealtimeEvent.Closed]
  *  - `connection_replaced {reason}` → [RoomRealtimeEvent.ConnectionReplaced]
  *  - `pong {…}`                   → [RoomRealtimeEvent.Pong], stamped with [receivedAtMs]
@@ -455,6 +465,17 @@ fun decodeRoomFrame(json: Json, raw: String, receivedAtMs: Long? = null): RoomRe
                 return RoomRealtimeEvent.Malformed(type)
             }
             RoomRealtimeEvent.SuggestionsEvent(list)
+        }
+        // A reaction carries no room state, so one that does not decode is
+        // dropped rather than reconciled.
+        WatchTogetherRealtime.TypeReaction -> {
+            val payload = obj["reaction"] as? JsonObject ?: return null
+            val reaction = try {
+                json.decodeFromJsonElement(Reaction.serializer(), payload)
+            } catch (_: Exception) {
+                return null
+            }
+            RoomRealtimeEvent.ReactionEvent(reaction)
         }
         WatchTogetherRealtime.TypeRoomClosed ->
             RoomRealtimeEvent.Closed((obj["reason"] as? JsonPrimitive)?.content)

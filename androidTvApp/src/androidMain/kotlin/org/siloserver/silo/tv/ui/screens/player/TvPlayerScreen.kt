@@ -511,6 +511,10 @@ fun TvPlayerScreen(
     val roomSnapshot: RoomSnapshot? = watchParty?.playback?.room?.collectAsState()?.value
     // Back in a party opens the party panel over the retained player.
     var showPartyPanel by remember { mutableStateOf(false) }
+    // The party's reaction strip, and whether closing it unsent returns to
+    // the transport it was opened from (else to clean playback).
+    var showReactionStrip by remember { mutableStateOf(false) }
+    var reactionStripFromControls by remember { mutableStateOf(false) }
 
     // Per-session playback control socket (admin remote control). Bound for the
     // lifetime of a sessionId; reconnects on its own and never interrupts
@@ -686,6 +690,7 @@ fun TvPlayerScreen(
     }
     val latestRoomSnapshot by rememberUpdatedState(roomSnapshot)
     val latestShowPartyPanel by rememberUpdatedState(showPartyPanel)
+    val latestShowReactionStrip by rememberUpdatedState(showReactionStrip)
     val latestShowQuickSubtitlePicker by rememberUpdatedState(showQuickSubtitlePicker)
     val selectTvSubtitle: (SubtitleIdentity) -> Unit = { identity ->
         subtitleFocusedStableId = tvSubtitleOptionStableId(identity)
@@ -717,6 +722,11 @@ fun TvPlayerScreen(
             target = target,
             nonce = idleOverlayFocusRequest.nonce + 1,
         )
+    }
+    fun openReactionStrip(fromControls: Boolean) {
+        reactionStripFromControls = fromControls
+        showReactionStrip = true
+        viewModel.setControlsVisible(false)
     }
 
     fun handleIntroPromptSelect(): Boolean {
@@ -1232,6 +1242,18 @@ fun TvPlayerScreen(
                 return@handler true
             }
 
+            // In a party, Up from clean playback opens the reaction strip:
+            // one press from the remote to say brb.
+            if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP &&
+                event.action == KeyEvent.ACTION_DOWN &&
+                watchParty?.playback?.reactionsAvailable == true &&
+                !playerState.showControls && !playerState.showNextUp && !playerState.hudOpen &&
+                !latestShowQuickSubtitlePicker && !latestShowPartyPanel && !latestShowReactionStrip
+            ) {
+                if (event.repeatCount == 0) openReactionStrip(fromControls = false)
+                return@handler true
+            }
+
             val action = tvPlayerRemoteKeyAction(
                 keyCode = event.keyCode,
                 action = event.action,
@@ -1252,7 +1274,7 @@ fun TvPlayerScreen(
                 viewModel.setControlsVisible(true)
             }
             if (latestShowQuickSubtitlePicker ||
-                playerState.hudOpen || latestShowPartyPanel ||
+                playerState.hudOpen || latestShowPartyPanel || latestShowReactionStrip ||
                 // The Up-Next overlay is a focus-trapping Compose surface that
                 // owns its own remote input (Play Now / Keep Watching / Back) —
                 // don't let the transport bridge toggle play/pause underneath it.
@@ -2303,7 +2325,9 @@ fun TvPlayerScreen(
                     event.nativeKeyEvent.keyCode != KeyEvent.KEYCODE_BACK &&
                     event.nativeKeyEvent.keyCode != KeyEvent.KEYCODE_DPAD_LEFT &&
                     event.nativeKeyEvent.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT &&
-                    !state.showControls
+                    !state.showControls &&
+                    // The reaction strip owns the remote while it is up.
+                    !showReactionStrip
                 ) {
                     viewModel.setControlsVisible(true)
                 }
@@ -2491,6 +2515,11 @@ fun TvPlayerScreen(
                         // control and the automatic trigger cannot disagree.
                         onUpNext = if (viewModel.canShowNextUpNow()) {
                             { viewModel.onUserRequestedNextUp() }
+                        } else {
+                            null
+                        },
+                        onReactions = if (watchParty?.playback?.reactionsAvailable == true) {
+                            { openReactionStrip(fromControls = true) }
                         } else {
                             null
                         },
@@ -2793,6 +2822,18 @@ fun TvPlayerScreen(
             TvWatchPartyPlayerOverlays(
                 watchParty = watchParty,
                 panelOpen = showPartyPanel,
+                reactionStripOpen = showReactionStrip,
+                onReactionStripClosed = { sent ->
+                    // From here it says whether the closed strip hands focus
+                    // back to the transport; otherwise the player takes it.
+                    reactionStripFromControls = !sent && reactionStripFromControls
+                    showReactionStrip = false
+                    if (reactionStripFromControls) {
+                        viewModel.setControlsVisible(true)
+                        requestIdleOverlayFocus(TvIdleOverlayFocusTarget.Transport)
+                    }
+                },
+                reactionStripRestoresPlayerFocus = !reactionStripFromControls,
                 isInPictureInPictureMode = isInPictureInPictureMode,
                 playerFocus = rootFocus,
                 playerFocused = playerRootHasFocus,
@@ -3098,6 +3139,8 @@ private fun TvPlayerIdleOverlay(
     onOpenQuickSubtitles: () -> Unit,
     /** Non-null only while a next episode is resolved and not already shown. */
     onUpNext: (() -> Unit)? = null,
+    /** Non-null in a Watch Party whose server takes reactions. */
+    onReactions: (() -> Unit)? = null,
     onClose: () -> Unit,
     // Watch Together transport authority. Solo playback leaves both true.
     // A guest who can't seek gets a no-op scrubber/skip; a guest who can't
@@ -3308,6 +3351,7 @@ private fun TvPlayerIdleOverlay(
                 onSkipForward = onSkipForward,
                 onOpenQuickSubtitles = onOpenQuickSubtitles,
                 onUpNext = onUpNext,
+                onReactions = onReactions,
                 onOpenHUD = onOpenHUD,
                 onClose = onClose,
                 playPauseFocus = playPauseFocus,

@@ -4,7 +4,39 @@ import org.siloserver.silo.common.i18n.uiText
 import org.siloserver.silo.common.i18n.text
 import org.siloserver.silo.common.i18n.stringResourceWithNames
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import androidx.tv.material3.Text
+import org.siloserver.silo.common.player.watchparty.reactionDescription
+import org.siloserver.silo.common.player.watchparty.reactionLabelRes
+import org.siloserver.silo.common.player.watchparty.roomNoticeText
+import org.siloserver.silo.model.watchtogether.ReactionPreset
+import org.siloserver.silo.model.watchtogether.RoomPlaybackState
+import org.siloserver.silo.watchtogether.RoomNotice
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,6 +110,12 @@ import org.siloserver.silo.common.cards.LocalEpisodeSpoilerPrefs
 internal fun TvWatchPartyPlayerOverlays(
     watchParty: TvWatchPartyScreenController,
     panelOpen: Boolean,
+    /** The reaction strip is up; it takes the remote until it closes. */
+    reactionStripOpen: Boolean,
+    /** The strip closed; [sent] is whether it sent something. */
+    onReactionStripClosed: (sent: Boolean) -> Unit,
+    /** Whether focus returns to the player when the strip closes, rather than to the transport. */
+    reactionStripRestoresPlayerFocus: Boolean,
     isInPictureInPictureMode: Boolean,
     playerFocus: FocusRequester,
     playerFocused: Boolean,
@@ -93,6 +131,35 @@ internal fun TvWatchPartyPlayerOverlays(
     if (!isInPictureInPictureMode && !panelOpen) {
         TvWatchPartyStatusOverlay(watchParty = watchParty, room = room, repository = repository)
     }
+    // The party panel (Stop, Back) replaces the strip rather than hiding it.
+    LaunchedEffect(panelOpen) {
+        if (panelOpen && reactionStripOpen) onReactionStripClosed(true)
+    }
+    if (!isInPictureInPictureMode && !panelOpen && reactionStripOpen) {
+        val canPauseWithBrb = room?.playbackState == RoomPlaybackState.Playing &&
+            watchParty.canPlayPause()
+        TvWatchPartyReactionStrip(
+            canPauseWithBrb = canPauseWithBrb,
+            onReact = { preset ->
+                onReactionStripClosed(true)
+                scope.launch {
+                    if (!watchParty.playback.sendReaction(preset)) {
+                        Toast.makeText(context, context.getString(CommonR.string.player_watchParty_undelivered), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onPauseWithBrb = {
+                onReactionStripClosed(true)
+                watchParty.playback.requestPlayPause(pause = true, reaction = ReactionPreset.Brb)
+            },
+            onDismiss = { onReactionStripClosed(false) },
+        )
+    }
+    TvRestoreFocusOnModalDismiss(
+        visible = reactionStripOpen && !isInPictureInPictureMode,
+        opener = playerFocus.takeIf { reactionStripRestoresPlayerFocus },
+        isOpenerFocused = { latestPlayerFocused },
+    )
     if (!isInPictureInPictureMode && panelOpen) {
         TvWatchPartyPanel(
             room = room,
@@ -164,10 +231,16 @@ private fun TvWatchPartyStatusOverlay(
         leftBehind = emptyList()
     }
 
+    val roomNotices by watchParty.playback.roomNotices.collectAsState()
+
     val playing = room?.phase == RoomPhase.Playing
     val hostAway = playing && room?.selfRole != MemberRole.Host && room?.hostConnected == false
     val waitingFor = if (catchingUp) null else tvWatchPartyWaitingFor(room)
-    if (reconnect == null && !hostAway && !catchingUp && waitingFor == null && leftBehind.isEmpty()) return
+    if (reconnect == null && !hostAway && !catchingUp && waitingFor == null && leftBehind.isEmpty() &&
+        roomNotices.isEmpty()
+    ) {
+        return
+    }
 
     Box(
         modifier = Modifier
@@ -208,6 +281,7 @@ private fun TvWatchPartyStatusOverlay(
                     title = stringResourceWithNames(CommonR.string.player_watchParty_continuingWithout, tvWatchPartyNameList(leftBehind)),
                 )
             }
+            roomNotices.forEach { notice -> TvRoomNotice(notice) }
         }
     }
 }
@@ -389,5 +463,163 @@ private fun TvWatchPartyPanel(
     )
 }
 
+/** A member's play, pause or seek, or a reaction with the sender's name and the reaction beside it. */
+@Composable
+private fun TvRoomNotice(notice: RoomNotice) {
+    val text = roomNoticeText(notice) ?: return
+    val reaction = notice.reaction?.takeIf { !notice.rateLimited }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+            .widthIn(max = 560.dp)
+            .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(14.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = text,
+            style = TvPlayerType.ButtonLabel.copy(color = TvPlayerChrome.Paper, fontSize = 16.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (reaction != null) {
+            Text(
+                text = stringResource(reactionLabelRes(reaction)),
+                style = TvPlayerType.ButtonLabel.copy(color = TvPlayerChrome.Paper, fontSize = 16.sp),
+                maxLines = 1,
+                modifier = Modifier
+                    .background(Color.White.copy(alpha = 0.16f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The party's quick reactions as one row of buttons above the transport, so
+ * a remote reaches every preset with Left/Right and sends it with Select.
+ * Focus starts on brb; Back closes the row without sending.
+ */
+@Composable
+private fun TvWatchPartyReactionStrip(
+    canPauseWithBrb: Boolean,
+    onReact: (ReactionPreset) -> Unit,
+    onPauseWithBrb: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val firstFocus = remember { FocusRequester() }
+    var firstFocused by remember { mutableStateOf(false) }
+    BackHandler(onBack = onDismiss)
+    LaunchedEffect(Unit) {
+        requestFocusUntilObserved(
+            maxAttempts = PANEL_FOCUS_ATTEMPTS,
+            awaitAttempt = { withFrameNanos { } },
+            requestFocus = firstFocus::requestFocus,
+            isFocused = { firstFocused },
+        )
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(7f)
+            .background(
+                Brush.verticalGradient(
+                    0.55f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.7f),
+                ),
+            ),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.padding(bottom = TvPlayerChrome.BottomInset + 24.dp),
+        ) {
+            Text(
+                text = stringResource(CommonR.string.player_watchParty_reactions_label).uppercase(),
+                style = TvPlayerType.Eyebrow,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.tvModalFocusBoundary(),
+            ) {
+                ReactionPreset.entries.forEachIndexed { index, preset ->
+                    TvReactionButton(
+                        text = stringResource(reactionLabelRes(preset)),
+                        description = reactionDescription(preset),
+                        onClick = { onReact(preset) },
+                        modifier = if (index == 0) {
+                            Modifier
+                                .focusRequester(firstFocus)
+                                .onFocusChanged { firstFocused = it.isFocused }
+                        } else {
+                            Modifier
+                        },
+                    )
+                }
+                if (canPauseWithBrb) {
+                    TvReactionButton(
+                        text = stringResource(CommonR.string.player_watchParty_reactions_pauseBrb),
+                        description = stringResource(CommonR.string.player_watchParty_reactions_pauseBrb),
+                        onClick = onPauseWithBrb,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** A pill in the transport's style: dark at rest, Paper with Ink text when focused. */
+@Composable
+private fun TvReactionButton(
+    text: String,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(percent = 50)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .height(TvReactionButtonHeight)
+            .widthIn(min = TvReactionButtonHeight * 1.6f)
+            .clip(shape)
+            .background(if (focused) TvPlayerChrome.Paper else TvPlayerChrome.ButtonRest)
+            .then(if (focused) Modifier else Modifier.border(1.dp, TvPlayerChrome.ButtonRing, shape))
+            .focusable(interactionSource = interactionSource)
+            // Select acts on key up, as on the transport, so the press that
+            // opened the row from a transport button never also sends.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        onClick()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+            }
+            .padding(horizontal = 22.dp),
+    ) {
+        Text(
+            text = text,
+            style = TvPlayerType.ButtonLabel.copy(
+                color = if (focused) TvPlayerChrome.Ink else TvPlayerChrome.Paper,
+                fontSize = 18.sp,
+            ),
+            maxLines = 1,
+        )
+    }
+}
+
+private val TvReactionButtonHeight = 52.dp
 private const val LEFT_BEHIND_NOTICE_MS = 6_000L
 private const val PANEL_FOCUS_ATTEMPTS = 10
